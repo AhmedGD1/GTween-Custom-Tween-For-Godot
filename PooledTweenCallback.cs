@@ -1,4 +1,5 @@
 using System;
+using Godot;
 
 public static class TweenCallbackExtensions
 {
@@ -31,11 +32,13 @@ public class PooledTweenCallback : ITweenCallback
     public Action<TweenData> OnComplete;
     public Action<TweenData> OnStart;
     public Action<TweenData> OnKill;
+    public Action<TweenData> OnPause;
 
     public void OnTweenUpdate(TweenData tween) => OnUpdate?.Invoke(tween);
     public void OnTweenComplete(TweenData tween) => OnComplete?.Invoke(tween);
     public void OnTweenStart(TweenData tween) => OnStart?.Invoke(tween);
     public void OnTweenKill(TweenData tween) => OnKill?.Invoke(tween);
+    public void OnTweenPauseToggle(TweenData tween, bool toggle) => OnPause?.Invoke(tween);
 
     public void Clear()
     {
@@ -43,5 +46,6 @@ public class PooledTweenCallback : ITweenCallback
         OnComplete = null;
         OnStart = null;
         OnKill = null;
+        OnPause = null;
     }
 }

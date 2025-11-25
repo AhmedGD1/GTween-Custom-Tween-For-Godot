@@ -2,17 +2,21 @@ using Godot;
 using System;
 using System.Collections.Generic;
 
+
 public interface ITweenCallback
 {
     void OnTweenUpdate(TweenData tween);
     void OnTweenComplete(TweenData tween);
     void OnTweenStart(TweenData tween);
     void OnTweenKill(TweenData tween);
+    void OnTweenPauseToggle(TweenData tween, bool toggle);
 }
 
 public class TweenData
 {
     public GodotObject Target { get; set; }
+    public object Id { get; set; }
+
     private string property;
     private StringName cachedPropertyName;
     
@@ -35,6 +39,7 @@ public class TweenData
     public Action OnUpdateCallback { get; set; }
     public Action OnKillCallback { get; set; }
     public Action Callback { get; set; }
+    public Action<bool> OnPauseToggleCallback { get; set; }
 
     public ITweenCallback CallbackInterface { get; set; }
 
@@ -44,6 +49,9 @@ public class TweenData
     public int CurrentSegmentIndex { get; set; }
     public float SegmentElapsed { get; set; }
 
+    public GTween.TransitionType? OverrideTransition { get; set; }
+    public GTween.EaseDirection? OverrideEaseDirection { get; set; }
+
     public bool IsPaused { get; set; }
     public float Delay { get; set; }
     public float SpeedScale { get; set; } = 1f;
@@ -52,6 +60,7 @@ public class TweenData
     public GTween.LoopMode LoopMode { get; set; }
     public int Loops { get; set; } = 1;
     public bool IsReversed { get; set; }
+    public bool IsKilled { get; set; }
 
     public bool IsShake { get; set; }
     public float ShakeStrength { get; set; }
@@ -93,6 +102,14 @@ public class TweenData
             CallbackInterface?.OnTweenKill(this);
         else
             OnKillCallback?.Invoke();
+    }
+
+    public void InvokeOnPauseToggle()
+    {
+        if (UseInterfaceCallbacks)
+            CallbackInterface?.OnTweenPauseToggle(this, IsPaused);
+        else
+            OnPauseToggleCallback?.Invoke(IsPaused);
     }
 
     public bool CanLoop() => Loops == 0 || (Loops > 1 && loopCount < Loops - 1);
@@ -138,6 +155,7 @@ public class TweenData
         HasStarted = false;
         SnapToInt = false;
         AutoKill = true;
+        IsKilled = false;
     }
 }
 
@@ -148,4 +166,8 @@ public struct TweenSegment
     public float Duration { get; set; }
     public GTween.EaseDirection Ease { get; set; }
     public GTween.TransitionType TransitionType { get; set; }
+
+    public bool UseCustomCurve { get; set; }
+    public Curve CustomCurve { get; set; }
+    public Func<float, float> CustomEaseFunction { get; set; }
 }

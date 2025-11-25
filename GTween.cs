@@ -32,6 +32,8 @@ public partial class GTween : Node
 
 
     public static GTween Instance { get; private set; }
+    public static VirtualTween Virtual { get; private set; }
+
     public TweenManager tweenManager = new();
 
     // Default conflict mode for all tweens
@@ -43,16 +45,18 @@ public partial class GTween : Node
     public override void _Ready()
     {
         Instance = this;
+        Virtual ??= new VirtualTween();
     }
 
     public override void _Process(double delta)
     {
         tweenManager.Update(delta);
+        Virtual.Update((float)delta);
     }
 
-    public static TweenSequence CreateSequence(GodotObject target)
+    public static TweenSequence CreateSequence(GodotObject target, object id = default)
     {
-        return new TweenSequence(target);
+        return new TweenSequence(target, id);
     }
 
     public static TweenController To(GodotObject target, string property, Variant endValue, float duration = 1f)
@@ -62,7 +66,33 @@ public partial class GTween : Node
 
     public static TweenController Fade(GodotObject target, float endValue, float duration)
     {
-        return target.TweenProperty("modulate:a").To(endValue).Durations(duration).Start();
+        Color color;
+
+        if (target is Node2D node2D)
+        {
+            color = node2D.Modulate;
+        }
+        else if (target is Control control)
+        {
+            color = control.Modulate;
+        }
+        else
+        {
+            return null;
+        }
+
+        color.A = endValue;
+        return target.TweenProperty("modulate").To(color).Durations(duration).Start();
+    }
+
+    public static TweenController FadeIn(GodotObject target, float duration)
+    {
+        return Fade(target, 1, duration);
+    }
+
+    public static TweenController FadeOut(GodotObject target, float duration)
+    {
+        return Fade(target, 0, duration);
     }
 
     public static TweenController Scale(GodotObject target, Vector2 endValue, float duration)
@@ -274,7 +304,7 @@ public partial class GTween : Node
             float targetRotation = Mathf.Atan2(direction.Y, direction.X);
             
             // Use shortest path for rotation
-            GTween.RotateRadShortestPath(target, targetRotation, duration);
+            RotateRadShortestPath(target, targetRotation, duration);
         }
         
         return tween.Start();
@@ -378,7 +408,7 @@ public partial class GTween : Node
             tween.Callback?.Invoke();
             
             // Kill the tween
-            GTween.Instance.tweenManager.KillTween(tween);
+            Instance.tweenManager.KillTween(tween);
         }
     }
 
@@ -395,7 +425,7 @@ public partial class GTween : Node
             return false;
         }
         
-        if (!GodotObject.IsInstanceValid(target))
+        if (!IsInstanceValid(target))
         {
             GD.PushError($"GTween.{methodName}: Target is not a valid instance");
             return false;
@@ -443,9 +473,29 @@ public partial class GTween : Node
     }
 
     //--------------------------------;
-    public static void KillAllTweens()
+    public static void KillAll()
     {
         Instance.tweenManager.KillAll();
+    }
+
+    public static int KillByType<TData>()
+    {
+        return Instance.tweenManager.KillByType<TData>();
+    }
+
+    public static int KillById(object id)
+    {
+        return Instance.tweenManager.KillById(id);
+    }
+
+    public static void KillTween(TweenData tween)
+    {
+        Instance.tweenManager.KillTween(tween);
+    }
+
+    public static int KillTweensOf(GodotObject target)
+    {
+        return Instance.tweenManager.KillTweensOf(target);
     }
 
     public static void TogglePause(bool toggle)
@@ -471,12 +521,6 @@ public partial class GTween : Node
             }
         }
     }
-
-    public static int KillTweensOf(GodotObject target)
-    {
-        return Instance.tweenManager.KillTweensOf(target);
-    }
-
 }
 
 public static class GTweenExtensions
@@ -486,9 +530,9 @@ public static class GTweenExtensions
         return new TweenBuilder(GTween.Instance.tweenManager, target, property);
     }
 
-    public static void Animate(this GodotObject target, string property, Variant[] values, float[] durations,
-        GTween.EaseDirection? easeType = null, GTween.TransitionType? trans = null, Action callback = null,
-            int loops = 1, GTween.LoopMode loopMode = GTween.LoopMode.Linear)
+    public static TweenController Animate(this GodotObject target, string property, Variant[] values, float[] durations,
+        GTween.EaseDirection? easeType = null, GTween.TransitionType? trans = null, Action callback = null, object id = default,
+            int loops = 1, GTween.LoopMode loopMode = GTween.LoopMode.Linear, float delay = 0f)
     {
         TweenData tweenData = new TweenData
         {
@@ -499,7 +543,9 @@ public static class GTweenExtensions
             CurrentSegmentIndex = 0,
             Loops = loops,
             LoopMode = loopMode,
-            Callback = callback
+            Callback = callback,
+            Id = id,
+            Delay = delay
         };
 
         var last = target.Get(property);
@@ -518,26 +564,30 @@ public static class GTweenExtensions
             last = values[i];
         }
 
-        GTween.Instance.tweenManager.RegisterTween(tweenData);
+        return GTween.Instance.tweenManager.RegisterTween(tweenData);
     }
 }
 
 public class TweenBuilder
 {
+    private GTween.ConflictMode conflictMode = GTween.DefaultConflictMode;
+    private GTween.EaseDirection easingType;
+    private GTween.TransitionType transitionType;
+
     private TweenManager manager;
     private GodotObject target;
     private TweenData tweenData;
     private List<Variant> steps = new();
     private List<float> durations = new();
     private Variant? from;
-    private GTween.EaseDirection easingType;
-    private GTween.TransitionType transitionType;
+
+    private Curve customCurve;
+    private Func<float, float> customEaseFunction;
 
     private bool isRelative = false;
     private bool snapToInt = false;
     private bool autoKill = true;
 
-    private GTween.ConflictMode conflictMode = GTween.DefaultConflictMode;
 
     public TweenBuilder(TweenManager manager, GodotObject target, string property)
     {
@@ -560,7 +610,13 @@ public class TweenBuilder
     public TweenBuilder SetConflictMode(GTween.ConflictMode mode)
     {
         conflictMode = mode;
-        return this; // FIX: No cast needed!
+        return this;
+    }
+
+    public TweenBuilder SetId(object id)
+    {
+        tweenData.Id = id;
+        return this;
     }
 
     public TweenBuilder From(Variant value)
@@ -578,6 +634,18 @@ public class TweenBuilder
     public TweenBuilder Durations(params float[] value)
     {
         durations.AddRange(value);
+        return this;
+    }
+
+    public TweenBuilder SetEase(Curve curve)
+    {
+        customCurve = curve;
+        return this;
+    }
+
+    public TweenBuilder SetEase(Func<float, float> easeFunction)
+    {
+        customEaseFunction = easeFunction;
         return this;
     }
 
@@ -615,6 +683,12 @@ public class TweenBuilder
     public TweenBuilder OnComplete(Action callback)
     {
         tweenData.Callback = callback;
+        return this;
+    }
+
+    public TweenBuilder OnKill(Action callback)
+    {
+        tweenData.OnKillCallback = callback;
         return this;
     }
 
@@ -696,7 +770,10 @@ public class TweenBuilder
                     End = absoluteValue,
                     Duration = durations[i],
                     Ease = easingType,
-                    TransitionType = transitionType
+                    TransitionType = transitionType,
+                    CustomCurve = customCurve,
+                    CustomEaseFunction = customEaseFunction,
+                    UseCustomCurve = customCurve != null || customEaseFunction != null
                 });
 
                 last = absoluteValue;
@@ -719,7 +796,7 @@ public class TweenBuilder
             }
         }
 
-        if (GTween.IsPropertyTweening(target, tweenData.Property)) // ← Changed from PropertyName
+        if (GTween.IsPropertyTweening(target, tweenData.Property))
         {
             switch (conflictMode)
             {
@@ -728,11 +805,11 @@ public class TweenBuilder
                     return null;
                     
                 case GTween.ConflictMode.Kill:
-                    GTween.KillPropertyTweens(target, tweenData.Property); // ← Changed from PropertyName
+                    GTween.KillPropertyTweens(target, tweenData.Property);
                     break;
                     
                 case GTween.ConflictMode.Complete:
-                    GTween.CompletePropertyTweens(target, tweenData.Property); // ← Changed from PropertyName
+                    GTween.CompletePropertyTweens(target, tweenData.Property);
                     break;
                     
                 case GTween.ConflictMode.Parallel:
@@ -828,58 +905,48 @@ public class TweenBuilder
 public class TweenSequence
 {
     private readonly GodotObject target;
+    private object id;
+
     private readonly List<SequenceStep> steps = new();
     private Action onCompleteCallback;
-    private int loops = 1;
+    private Action onStartCallback;
+    private Action onStepCallback;
 
-    public TweenSequence(GodotObject target)
+    public TweenSequence(GodotObject target, object id)
     {
         this.target = target;
+        this.id = id;
     }
 
-    public TweenSequence Then(string property, Variant value, float duration = 1f)
+    public TweenSequence Append(string property, Variant value, float duration = 1f)
     {
         steps.Add(SequenceStep.Animate(property, value, duration, GTween.TransitionType.Linear, GTween.EaseDirection.In));
         return this;
     }
 
-    public TweenSequence Wait(float duration)
+    public TweenSequence AppendInterval(float duration)
     {
         steps.Add(SequenceStep.WaitStep(duration));
         return this;
     }
 
-    public TweenSequence ThenCall(Action callback)
+    public TweenSequence AppendCallback(Action callback)
     {
         steps.Add(SequenceStep.CallbackStep(callback));
         return this;
     }
 
-    public TweenSequence WithEase(GTween.EaseDirection easing)
+    public TweenSequence SetEase(GTween.EaseDirection easing)
     {
         if (steps.Count > 0)
             steps[^1].EaseType = easing;
         return this;
     }
 
-    public TweenSequence WithTransition(GTween.TransitionType type)
+    public TweenSequence SetTransition(GTween.TransitionType type)
     {
         if (steps.Count > 0)
             steps[^1].Transition = type;
-        return this;
-    }
-
-    public TweenSequence Join(string property, Variant value, float duration = 1f)
-    {
-        if (steps.Count == 0)
-        {
-            return Then(property, value, duration);
-        }
-
-        var step = SequenceStep.Animate(property, value, duration, 
-            GTween.TransitionType.Linear, GTween.EaseDirection.In);
-        step.IsParallel = true;
-        steps.Add(step);
         return this;
     }
 
@@ -889,50 +956,55 @@ public class TweenSequence
         return this;
     }
 
-    public TweenSequence SetLoops(int count)
+    public TweenSequence OnStart(Action callback)
     {
-        loops = count;
+        onStartCallback = callback;
         return this;
     }
 
-    public void Start()
+    public TweenSequence OnStep(Action callback)
+    {
+        onStartCallback = callback;
+        return this;
+    }
+
+    public TweenSequence SetLoops(int count, GTween.LoopMode mode)
+    {
+        if (steps.Count > 0)
+        {
+            steps[^1].Loops = count;
+            steps[^1].LoopMode = mode;
+        }
+        return this;
+    }
+
+    public void Play()
     {
         ExecuteNextStep(0, 0);
+        onStartCallback?.Invoke();
     }
 
     private void ExecuteNextStep(int index, int loopIndex)
     {
         if (index >= steps.Count)
         {
-            if (loopIndex + 1 < loops)
-            {
-                ExecuteNextStep(0, loopIndex + 1);
-                return;
-            }
-            
             onCompleteCallback?.Invoke();
             return;
         }
 
         SequenceStep step = steps[index];
 
-        bool hasParallel = index + 1 < steps.Count && steps[index + 1].IsParallel;
-
         switch (step.Type)
         {
             case SequenceStep.StepType.Animate:
-                if (hasParallel)
-                {
-                    target.Animate(step.Property, [step.Value], [step.Duration], 
-                        step.EaseType, step.Transition);
-                    ExecuteNextStep(index + 1, loopIndex);
-                }
-                else
-                {
-                    target.Animate(step.Property, [step.Value], [step.Duration], 
-                        step.EaseType, step.Transition, 
-                        () => ExecuteNextStep(index + 1, loopIndex));
-                }
+                var tween = target.Animate(step.Property, [step.Value], [step.Duration], 
+                    step.EaseType, step.Transition, 
+                    () => ExecuteNextStep(index + 1, loopIndex));
+                
+                if (step.IsPaused) tween.Pause();
+                else tween.Play();
+
+                onStepCallback?.Invoke();
                 break;
 
             case SequenceStep.StepType.Wait:
@@ -950,67 +1022,67 @@ public class TweenSequence
     //---------------------------------
     public TweenSequence Cubic()
     {
-        WithTransition(GTween.TransitionType.Cubic);
+        SetTransition(GTween.TransitionType.Cubic);
         return this;
     }
 
     public TweenSequence Sine()
     {
-        WithTransition(GTween.TransitionType.Sine);
+        SetTransition(GTween.TransitionType.Sine);
         return this;
     }
 
     public TweenSequence Elastic()
     {
-        WithTransition(GTween.TransitionType.Elastic);
+        SetTransition(GTween.TransitionType.Elastic);
         return this;
     }
 
     public TweenSequence Back()
     {
-        WithTransition(GTween.TransitionType.Back);
+        SetTransition(GTween.TransitionType.Back);
         return this;
     }
 
     public TweenSequence Quad()
     {
-        WithTransition(GTween.TransitionType.Quad);
+        SetTransition(GTween.TransitionType.Quad);
         return this;
     }
 
     public TweenSequence Bounce()
     {
-        WithTransition(GTween.TransitionType.Bounce);
+        SetTransition(GTween.TransitionType.Bounce);
         return this;
     }
 
     public TweenSequence Circ()
     {
-        WithTransition(GTween.TransitionType.Circ);
+        SetTransition(GTween.TransitionType.Circ);
         return this;
     }
 
     public TweenSequence EaseIn()
     {
-        WithEase(GTween.EaseDirection.In);
+        SetEase(GTween.EaseDirection.In);
         return this;
     }
 
     public TweenSequence EaseOut()
     {
-        WithEase(GTween.EaseDirection.Out);
+        SetEase(GTween.EaseDirection.Out);
         return this;
     }
 
     public TweenSequence EaseInOut()
     {
-        WithEase(GTween.EaseDirection.InOut);
+        SetEase(GTween.EaseDirection.InOut);
         return this;
     }
 
     public TweenSequence EaseOutIn()
     {
-        WithEase(GTween.EaseDirection.OutIn);
+        SetEase(GTween.EaseDirection.OutIn);
         return this;
     }
 }
@@ -1026,10 +1098,14 @@ public class SequenceStep
     public GTween.TransitionType Transition { get; set; }
     public GTween.EaseDirection EaseType { get; set; }
     public Action Callback { get; set; }
-    public bool IsParallel { get; set; }
+    public bool IsPaused { get; set; }
+
+    public int Loops { get; set; }
+    public GTween.LoopMode LoopMode { get; set; }
 
 
-    public static SequenceStep Animate(string property, Variant value, float duration, GTween.TransitionType trans, GTween.EaseDirection easeType)
+    public static SequenceStep Animate(string property, Variant value, float duration, GTween.TransitionType trans, GTween.EaseDirection easeType,
+        int loops = 1, GTween.LoopMode loopMode = GTween.LoopMode.Linear)
     {
         SequenceStep step = new SequenceStep()
         {
@@ -1038,7 +1114,8 @@ public class SequenceStep
             Value = value,
             Duration = duration,
             Transition = trans,
-            EaseType = easeType  
+            EaseType = easeType,
+            Loops = loops
         };
 
         return step;
@@ -1066,3 +1143,152 @@ public class SequenceStep
         return step;
     }
 }
+
+// Corrected GCurves class using Godot's Curve properly
+public static class GCurves
+{
+    // Cache curves to avoid recreation
+    private static Curve _easeIn;
+    private static Curve _easeOut;
+    private static Curve _easeInOut;
+    private static Curve _bounce;
+    private static Curve _elastic;
+    private static Curve _backIn;
+    private static Curve _backOut;
+
+    public static Curve EaseIn
+    {
+        get
+        {
+            if (_easeIn == null)
+            {
+                _easeIn = new Curve();
+                _easeIn.AddPoint(new Vector2(0, 0));
+                _easeIn.AddPoint(new Vector2(1, 1));
+                // Configure for ease-in (starts slow, ends fast)
+                _easeIn.SetPointRightMode(0, Curve.TangentMode.Linear);
+                _easeIn.SetPointLeftMode(1, Curve.TangentMode.Linear);
+            }
+            return _easeIn;
+        }
+    }
+
+    public static Curve EaseOut
+    {
+        get
+        {
+            if (_easeOut == null)
+            {
+                _easeOut = new Curve();
+                _easeOut.AddPoint(new Vector2(0, 0));
+                _easeOut.AddPoint(new Vector2(1, 1));
+                // Configure for ease-out (starts fast, ends slow)
+                _easeOut.SetPointRightMode(0, Curve.TangentMode.Linear);
+                _easeOut.SetPointLeftMode(1, Curve.TangentMode.Linear);
+            }
+            return _easeOut;
+        }
+    }
+
+    public static Curve EaseInOut
+    {
+        get
+        {
+            if (_easeInOut == null)
+            {
+                _easeInOut = new Curve();
+                _easeInOut.AddPoint(new Vector2(0, 0));
+                _easeInOut.AddPoint(new Vector2(0.5f, 0.5f));
+                _easeInOut.AddPoint(new Vector2(1, 1));
+                // S-curve shape
+                _easeInOut.SetPointRightMode(0, Curve.TangentMode.Linear);
+                _easeInOut.SetPointLeftMode(2, Curve.TangentMode.Linear);
+            }
+            return _easeInOut;
+        }
+    }
+
+    public static Curve Bounce
+    {
+        get
+        {
+            if (_bounce == null)
+            {
+                _bounce = new Curve();
+                _bounce.AddPoint(new Vector2(0, 0));
+                _bounce.AddPoint(new Vector2(0.2f, 0.8f));
+                _bounce.AddPoint(new Vector2(0.4f, 0.3f));
+                _bounce.AddPoint(new Vector2(0.6f, 0.9f));
+                _bounce.AddPoint(new Vector2(0.8f, 0.5f));
+                _bounce.AddPoint(new Vector2(1, 1));
+            }
+            return _bounce;
+        }
+    }
+
+    public static Curve Elastic
+    {
+        get
+        {
+            if (_elastic == null)
+            {
+                _elastic = new Curve();
+                _elastic.AddPoint(new Vector2(0, 0));
+                _elastic.AddPoint(new Vector2(0.1f, -0.2f));
+                _elastic.AddPoint(new Vector2(0.3f, 1.3f));
+                _elastic.AddPoint(new Vector2(0.5f, 0.7f));
+                _elastic.AddPoint(new Vector2(0.7f, 1.1f));
+                _elastic.AddPoint(new Vector2(1, 1));
+            }
+            return _elastic;
+        }
+    }
+
+    public static Curve BackIn
+    {
+        get
+        {
+            if (_backIn == null)
+            {
+                _backIn = new Curve();
+                _backIn.AddPoint(new Vector2(0, 0));
+                _backIn.AddPoint(new Vector2(0.3f, -0.2f)); // Back up first
+                _backIn.AddPoint(new Vector2(1, 1));
+            }
+            return _backIn;
+        }
+    }
+
+    public static Curve BackOut
+    {
+        get
+        {
+            if (_backOut == null)
+            {
+                _backOut = new Curve();
+                _backOut.AddPoint(new Vector2(0, 0));
+                _backOut.AddPoint(new Vector2(0.7f, 1.2f)); // Overshoot
+                _backOut.AddPoint(new Vector2(1, 1));
+            }
+            return _backOut;
+        }
+    }
+
+    // Helper method to create custom curves easily
+    public static Curve CreateCustom(params Vector2[] points)
+    {
+        var curve = new Curve();
+        foreach (var point in points)
+        {
+            curve.AddPoint(point);
+        }
+        return curve;
+    }
+
+    // Load curve from resource file
+    public static Curve LoadFromResource(string path)
+    {
+        return ResourceLoader.Load<Curve>(path);
+    }
+}
+

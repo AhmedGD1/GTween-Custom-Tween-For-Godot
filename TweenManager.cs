@@ -87,9 +87,20 @@ public class TweenManager
         return result;
     }
 
+    public bool IsTweenActive(TweenData tweenData)
+    {
+        for (int i = 0; i < activeTweenCount; i++)
+        {
+            if (activeTweens[i] == tweenData)
+                return true;
+        }
+        return false;
+    }
+
     public void KillTween(TweenData tween)
     {
         tween.OnKillCallback?.Invoke();
+        tween.IsKilled = true;
         
         if (toRemoveCount >= toRemove.Length)
             Array.Resize(ref toRemove, toRemove.Length * 2);
@@ -102,6 +113,7 @@ public class TweenManager
         for (int i = 0; i < activeTweenCount; i++)
         {
             activeTweens[i].OnKillCallback?.Invoke();
+            activeTweens[i].IsKilled = true;
         }
         activeTweenCount = 0;
         toRemoveCount = 0;
@@ -114,12 +126,38 @@ public class TweenManager
         {
             if (activeTweens[i].Target == target)
             {
-                activeTweens[i].OnKillCallback?.Invoke();
-                
-                if (toRemoveCount >= toRemove.Length)
-                    Array.Resize(ref toRemove, toRemove.Length * 2);
-                    
-                toRemove[toRemoveCount++] = activeTweens[i];
+                KillTween(activeTweens[i]);
+                killed++;
+            }
+        }
+        return killed;
+    }
+
+    public int KillByType<TData>()
+    {
+        int killed = 0;
+
+        foreach (var tween in activeTweens)
+        {
+            if (tween != null && tween.Target is TData)
+            {
+                KillTween(tween);
+                killed++;
+            }
+        }
+
+        return killed;
+    }
+
+    public int KillById(object id)
+    {
+        int killed = 0;
+
+        for (int i = activeTweenCount - 1; i >= 0; i--)
+        {
+            if (activeTweens[i].Id != null && activeTweens[i].Id.Equals(id))
+            {
+                KillTween(activeTweens[i]);
                 killed++;
             }
         }
@@ -145,6 +183,15 @@ public class TweenManager
         for (int i = 0; i < activeTweenCount; i++)
         {
             var tween = activeTweens[i];
+
+            if (tween.IsKilled)
+            {
+                if (toRemoveCount >= toRemove.Length)
+                    Array.Resize(ref toRemove, toRemove.Length * 2);
+
+                toRemove[toRemoveCount++] = tween;
+                continue;
+            }
 
             if (!GodotObject.IsInstanceValid(tween.Target))
             {
@@ -177,7 +224,7 @@ public class TweenManager
             
             segmentProgressCache[i] = progress;
 
-            float easedProgress = ApplyEasingFast(progress, seg.TransitionType, seg.Ease);
+            float easedProgress = ApplyEasingFast(progress, seg, tween);
             Variant currentValue = InterpolateFast(seg.Start, seg.End, easedProgress);
 
             if (tween.SnapToInt)
@@ -276,7 +323,22 @@ public class TweenManager
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private float ApplyEasingFast(float t, GTween.TransitionType trans, GTween.EaseDirection ease)
+    private float ApplyEasingFast(float t, TweenSegment segment, TweenData tween)
+    {
+        if (segment.UseCustomCurve)
+        {
+            if (segment.CustomEaseFunction != null)
+                return segment.CustomEaseFunction(t);
+            
+            if (segment.CustomCurve != null)
+                return segment.CustomCurve.Sample(t);
+        }
+        
+        return ApplyEasingFast(t, tween.OverrideTransition ?? segment.TransitionType, tween.OverrideEaseDirection ?? segment.Ease);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public float ApplyEasingFast(float t, GTween.TransitionType trans, GTween.EaseDirection ease)
     {
         if (trans == GTween.TransitionType.Linear)
             return t;
@@ -298,7 +360,7 @@ public class TweenManager
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private Variant InterpolateFast(Variant start, Variant end, float t)
+    public Variant InterpolateFast(Variant start, Variant end, float t)
     {
         var type = start.VariantType;
         
@@ -522,7 +584,7 @@ public class TweenManager
         tween.CurrentSegmentIndex = 0;
         tween.SegmentElapsed = 0f;
 
-        if (tween.LoopMode == GTween.LoopMode.PingPong && !tween.IsReversed)
+        if (tween.LoopMode == GTween.LoopMode.PingPong)
         {
             tween.Segments.Reverse();
             for (int s = 0; s < tween.Segments.Count; s++)
@@ -531,7 +593,7 @@ public class TweenManager
                 (segment.Start, segment.End) = (segment.End, segment.Start);
                 tween.Segments[s] = segment;
             }
-            tween.IsReversed = true;
+            tween.IsReversed = !tween.IsReversed;
         }
     }
 
