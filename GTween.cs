@@ -54,7 +54,12 @@ public partial class GTween : Node
         Virtual.Update((float)delta);
     }
 
-    public static TweenSequence CreateSequence(GodotObject target, object id = default)
+    public static TweenSequence CreateSequence(GodotObject target)
+    {
+        return new TweenSequence(target, default);
+    }
+
+    public static TweenSequence CreateSequence(GodotObject target, object id)
     {
         return new TweenSequence(target, id);
     }
@@ -62,6 +67,11 @@ public partial class GTween : Node
     public static TweenController To(GodotObject target, string property, Variant endValue, float duration = 1f)
     {
         return target.TweenProperty(property).To(endValue).Durations(duration).Start();
+    }
+
+    public static TweenController FromTo(GodotObject target, string property, Variant startValue, Variant endValue, float duration = 1f)
+    {
+        return target.TweenProperty(property).From(startValue).To(endValue).Durations(duration).Start();
     }
 
     public static TweenController Fade(GodotObject target, float endValue, float duration)
