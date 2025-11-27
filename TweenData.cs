@@ -170,4 +170,5 @@ public struct TweenSegment
     public bool UseCustomCurve { get; set; }
     public Curve CustomCurve { get; set; }
     public Func<float, float> CustomEaseFunction { get; set; }
+
 }
